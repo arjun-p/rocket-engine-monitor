@@ -110,7 +110,7 @@ async def get_components():
         raise HTTPException(status_code=500, detail="S3 credentials not configured")
 
     # Load Vadalog program from file
-    vadalog_file = os.path.join(os.path.dirname(__file__), "..", "vadalog", "get_components.vada")
+    vadalog_file = os.path.join(os.path.dirname(__file__), "vadalog", "get_components.vada")
     with open(vadalog_file, "r") as f:
         vadalog_template = f.read()
 
