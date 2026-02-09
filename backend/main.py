@@ -164,6 +164,58 @@ async def get_components():
         raise HTTPException(status_code=500, detail=f"Error fetching components: {str(e)}")
 
 
+@app.get("/relationships", tags=["Components"])
+async def get_relationships():
+    """
+    Get component dependency relationships (parent → child)
+    Returns array of {source, target} pairs
+    """
+    # Mock relationships based on typical rocket engine architecture
+    # TODO: Replace with Vadalog query to Neo4j via Prometheux API
+    relationships = [
+        # Main chain: Tank → Pump → Chamber → Nozzle
+        {"source": "LOX_Tank", "target": "LPOTP"},
+        {"source": "LPOTP", "target": "LPOTP_Discharge"},
+        {"source": "LPOTP_Discharge", "target": "HPOTP"},
+        {"source": "HPOTP", "target": "HPOTP_Discharge"},
+        {"source": "HPOTP_Discharge", "target": "Oxidizer_Preburner"},
+        {"source": "Oxidizer_Preburner", "target": "Main_Injector"},
+        {"source": "Main_Injector", "target": "Main_Combustion_Chamber"},
+        {"source": "Main_Combustion_Chamber", "target": "Nozzle_Throat"},
+        {"source": "Nozzle_Throat", "target": "Nozzle_Extension"},
+
+        # Powerhead and control
+        {"source": "Powerhead", "target": "HPOTP"},
+        {"source": "Controller_MEC", "target": "Powerhead"},
+
+        # Fuel system
+        {"source": "Fuel_Coolant_Valve_A", "target": "Main_Combustion_Chamber"},
+        {"source": "LOX_Supply_Line", "target": "Main_Injector"},
+
+        # Sensors monitoring temperature
+        {"source": "Temp_Sensor_A", "target": "Main_Combustion_Chamber"},
+        {"source": "Temp_Sensor_B", "target": "Nozzle_Throat"},
+        {"source": "Temp_Sensor_C", "target": "Oxidizer_Preburner"},
+        {"source": "Temp_Sensor_Pass_A", "target": "HPOTP"},
+        {"source": "Temp_Sensor_Pass_B", "target": "LPOTP"},
+        {"source": "Temp_Sensor_Pass_C", "target": "Fuel_Coolant_Valve_A"},
+
+        # Support systems
+        {"source": "Helium_Control_System", "target": "OPOV"},
+        {"source": "OPOV", "target": "Oxidizer_Preburner"},
+        {"source": "Press_Reg_C", "target": "Helium_Control_System"},
+        {"source": "Bleed_Valve", "target": "HPOTP_Discharge"},
+        {"source": "Vibration_Suppressor_B", "target": "LOX_Supply_Line"},
+        {"source": "Hot_Gas_Manifold", "target": "Oxidizer_Preburner"},
+        {"source": "Gimbal_Actuator", "target": "Nozzle_Extension"},
+        {"source": "Hydraulic_Power_Unit", "target": "Gimbal_Actuator"},
+        {"source": "Engine_Mount", "target": "External_Interface"},
+        {"source": "External_Interface", "target": "Controller_MEC"},
+    ]
+
+    return relationships
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
