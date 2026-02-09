@@ -156,7 +156,7 @@ async def get_components():
         if "component" not in result_set:
             raise HTTPException(status_code=500, detail=f"No component data in results: {data}")
 
-        return result_set["component"]
+        return [item[0] for item in result_set["component"]]
 
     except httpx.HTTPError as e:
         raise HTTPException(status_code=500, detail=f"Prometheux API error: {str(e)}")
