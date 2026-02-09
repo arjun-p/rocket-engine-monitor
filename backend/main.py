@@ -4,7 +4,6 @@ import httpx
 import os
 from datetime import datetime
 from dotenv import load_dotenv
-from models import HealthResponse
 
 # Load environment variables
 load_dotenv()
@@ -86,7 +85,7 @@ async def root():
     }
 
 
-@app.get("/health", response_model=HealthResponse, tags=["Health"])
+@app.get("/health", tags=["Health"])
 async def health_check():
     """Health check endpoint"""
     return {
