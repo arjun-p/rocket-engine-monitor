@@ -1,12 +1,40 @@
 'use client';
 
-import { useEffect, useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import cytoscape, { Core, ElementDefinition } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 import NodeDetailCard from './NodeDetailCard';
 
 // Register dagre extension
 cytoscape.use(dagre);
+
+// Layout configuration presets
+const layoutConfigs = {
+  hierarchy: {
+    name: 'dagre',
+    rankDir: 'TB',           // Top to Bottom - leaf components at bottom
+    nodeSep: 120,            // Horizontal spread
+    rankSep: 15,             // Short arrows
+    animate: true,
+    animationDuration: 500,
+  },
+  network: {
+    name: 'cose',
+    animate: true,
+    animationDuration: 1000,
+    nodeRepulsion: 8000,
+    idealEdgeLength: 100,
+    edgeElasticity: 100,
+    nestingFactor: 1.2,
+    gravity: 1,
+    numIter: 1000,
+    initialTemp: 200,
+    coolingFactor: 0.95,
+    minTemp: 1.0,
+  },
+};
+
+type LayoutType = 'hierarchy' | 'network';
 
 interface Component {
   id: string;
@@ -47,19 +75,14 @@ interface DependencyGraphProps {
 export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
+  const isInitialMount = useRef(true);
+  const graphInitialized = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
   const [degreeCentrality, setDegreeCentrality] = useState<DegreeCentralityResponse | null>(null);
   const [selectedNode, setSelectedNode] = useState<DegreeCentralityNode | null>(null);
-
-  // Create centrality map for quick lookup when nodes are clicked
-  const centralityMap = useMemo(() => {
-    if (!degreeCentrality?.nodes) return new Map<string, DegreeCentralityNode>();
-    return new Map(
-      degreeCentrality.nodes.map(node => [node.component_id, node])
-    );
-  }, [degreeCentrality]);
+  const [layoutType, setLayoutType] = useState<LayoutType>('hierarchy');
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -92,8 +115,10 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
           degreeMap.set(node.component_id, node.degree);
         });
 
-        const maxDegree = degreeCentralityData.metadata.max_degree;
-        const minDegree = Math.min(...degreeCentralityData.nodes.map(n => n.degree));
+        // Create full centrality data map for click handlers (avoids closure issue)
+        const localCentralityMap = new Map(
+          degreeCentralityData.nodes.map(node => [node.component_id, node])
+        );
 
         // Transform to Cytoscape format with degree data
         const nodes: ElementDefinition[] = components.map((comp) => {
@@ -172,14 +197,7 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
               },
             },
           ],
-          layout: {
-            name: 'dagre',
-            rankDir: 'TB',           // Top to Bottom - leaf components at bottom
-            nodeSep: 120,            // Horizontal spread
-            rankSep: 15,             // Short arrows
-            animate: true,
-            animationDuration: 500,
-          } as any,
+          layout: layoutConfigs[layoutType] as any,
         });
 
         cyRef.current = cy;
@@ -187,45 +205,29 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
         // Apply degree centrality sizing from backend data
         cy.one('layoutstop', () => {
           setTimeout(() => {
-            console.log('=== DEGREE CENTRALITY SIZING DEBUG ===');
-            console.log('Max degree:', maxDegree, 'Min degree:', minDegree);
-            console.log('Total nodes in degreeMap:', degreeMap.size);
-
-            // Apply proportional sizing based on backend degree centrality
-            cy.nodes().forEach(node => {
-              const nodeId = node.id();
-              const degree = degreeMap.get(nodeId);
-
-              if (degree === undefined) {
-                console.warn(`No degree found for node: ${nodeId}`);
-                return;
-              }
-
-              // Use exponential scaling for more visual distinction
-              const baseSize = 50;
-              const maxSize = 150;
-
-              // Normalize to 0-1 range
-              const normalizedDegree = maxDegree > minDegree
-                ? (degree - minDegree) / (maxDegree - minDegree)
-                : 0.5;
-
-              // Apply exponential curve for more dramatic differences
-              const scaledValue = Math.pow(normalizedDegree, 0.7); // Soften the curve slightly
-              const size = baseSize + (scaledValue * (maxSize - baseSize));
-
-              console.log(`${nodeId}: degree=${degree}, normalized=${normalizedDegree.toFixed(2)}, size=${size.toFixed(0)}px`);
-
-              node.style({
-                'width': size,
-                'height': size,
-                'font-size': `${10 + scaledValue * 8}px`, // 10-18px font scaling
-              });
-            });
-
+            // All nodes same size - no dynamic sizing
             cy.fit();                      // Fit all elements
             cy.zoom(cy.zoom() * 0.85);     // Zoom out 15% for padding
             cy.center();
+
+            // Mark graph as initialized to prevent layout re-run
+            graphInitialized.current = true;
+
+            // Auto-select the most central node (rank #1)
+            if (degreeCentralityData.nodes.length > 0) {
+              const topNode = degreeCentralityData.nodes[0]; // Rank #1
+              setSelectedNode(topNode);
+
+              // Highlight the top node with green background + amber border
+              const cyNode = cy.getElementById(topNode.component_id);
+              if (cyNode.length > 0) {
+                cyNode.style({
+                  'background-color': '#10b981', // green-500
+                  'border-width': 6,
+                  'border-color': '#f59e0b', // amber-500
+                });
+              }
+            }
           }, 100);
         });
 
@@ -234,24 +236,24 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
           const node = evt.target;
           const componentId = node.data('id');
 
-          // Get full centrality data from map and show detail card
-          const nodeData = centralityMap.get(componentId);
+          // Get full centrality data from local map and show detail card
+          const nodeData = localCentralityMap.get(componentId);
           if (nodeData) {
             setSelectedNode(nodeData);
           }
 
-          // Reset all highlights
-          cy.elements().removeClass('highlighted');
+          // Reset all node styles to default
+          cy.nodes().style({
+            'background-color': '#3b82f6', // blue-500
+            'border-width': 4,
+            'border-color': '#60a5fa',
+          });
 
-          // Highlight connected edges
-          const connectedEdges = node.connectedEdges();
-          connectedEdges.addClass('highlighted');
-
-          // Highlight connected nodes
-          const connectedNodes = connectedEdges.connectedNodes();
-          connectedNodes.style({
-            'border-width': 3,
-            'border-color': '#34d399',
+          // Highlight only the clicked node with green background + amber border
+          node.style({
+            'background-color': '#10b981', // green-500
+            'border-width': 6,
+            'border-color': '#f59e0b', // amber-500 for prominence
           });
         });
 
@@ -261,6 +263,7 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
             setSelectedNode(null);
             cy.elements().removeClass('highlighted');
             cy.nodes().style({
+              'background-color': '#3b82f6', // blue-500
               'border-width': 4,
               'border-color': '#60a5fa',
             });
@@ -282,8 +285,32 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
         cyRef.current.destroy();
         cyRef.current = null;
       }
+      graphInitialized.current = false;
     };
   }, [apiUrl]);
+
+  // Re-run layout when layout type changes (skip until graph is initialized)
+  useEffect(() => {
+    // Skip until graph is fully initialized to avoid double animation
+    if (!graphInitialized.current) {
+      return;
+    }
+
+    if (!cyRef.current) return;
+
+    const cy = cyRef.current;
+    const layout = cy.layout(layoutConfigs[layoutType] as any);
+    layout.run();
+
+    // Fit to viewport after layout completes
+    layout.on('layoutstop', () => {
+      setTimeout(() => {
+        cy.fit();
+        cy.zoom(cy.zoom() * 0.85);
+        cy.center();
+      }, 100);
+    });
+  }, [layoutType]);
 
   return (
     <div className="relative h-full w-full">
@@ -316,16 +343,24 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
             <p className="text-slate-400">Edges:</p>
             <p className="text-xl font-bold text-green-400">{stats.edges}</p>
           </div>
-          {degreeCentrality?.metadata.most_central_component && (
-            <div className="mt-3 border-t border-slate-700 pt-3 text-sm">
-              <p className="text-slate-400 text-xs">Most Connected:</p>
-              <p className="text-sm font-semibold text-orange-400">
-                {degreeCentrality.metadata.most_central_component.replace(/_/g, ' ')}
-              </p>
-            </div>
-          )}
-          <div className="mt-4 border-t border-slate-700 pt-4 text-xs text-slate-500">
-            💡 Click nodes to highlight connections
+        </div>
+      )}
+
+      {/* Layout Toggle Button */}
+      {!loading && !error && (
+        <div className="absolute bottom-4 left-4 z-10 group">
+          <button
+            onClick={() => setLayoutType(prev => prev === 'hierarchy' ? 'network' : 'hierarchy')}
+            className="rounded-lg bg-slate-800 border border-slate-700 p-2.5 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all shadow-lg"
+            title="Toggle view"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+            </svg>
+          </button>
+          {/* Tooltip */}
+          <div className="absolute bottom-full left-0 mb-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+            Toggle view
           </div>
         </div>
       )}
@@ -339,6 +374,47 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
           totalNodes={degreeCentrality?.metadata.total_nodes || 30}
           onClose={() => setSelectedNode(null)}
         />
+      )}
+
+      {/* Centrality Table */}
+      {degreeCentrality && (
+        <div className="absolute bottom-6 right-6 w-96 max-h-80 bg-slate-800/95 rounded-lg shadow-2xl border border-slate-700 backdrop-blur-sm overflow-hidden">
+          <div className="p-3 border-b border-slate-700">
+            <h3 className="text-sm font-semibold text-slate-200">Network Metrics</h3>
+          </div>
+          <div className="overflow-y-auto max-h-64">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-800 border-b border-slate-700">
+                <tr>
+                  <th className="text-left p-2 text-slate-400 font-medium">Rank</th>
+                  <th className="text-left p-2 text-slate-400 font-medium">Component</th>
+                  <th className="text-right p-2 text-slate-400 font-medium">Centrality</th>
+                  <th className="text-right p-2 text-slate-400 font-medium">Connections</th>
+                </tr>
+              </thead>
+              <tbody>
+                {degreeCentrality.nodes.map((node) => (
+                  <tr
+                    key={node.component_id}
+                    className="border-b border-slate-700/50 hover:bg-slate-700/50 cursor-pointer transition-colors"
+                    onClick={() => setSelectedNode(node)}
+                  >
+                    <td className="p-2 text-slate-300">#{node.rank}</td>
+                    <td className="p-2 text-slate-100 font-medium">
+                      {node.component_id.replace(/_/g, ' ')}
+                    </td>
+                    <td className="p-2 text-right text-blue-400 font-mono">
+                      {node.centrality.toFixed(4)}
+                    </td>
+                    <td className="p-2 text-right text-green-400 font-semibold">
+                      {node.degree}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       )}
     </div>
   );

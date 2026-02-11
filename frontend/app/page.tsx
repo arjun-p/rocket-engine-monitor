@@ -22,11 +22,7 @@ export default function Home() {
             🚀 Rocket Engine Monitor
           </h1>
           <p className="mt-1 text-xs text-slate-500 pl-[2.5em]">
-            {viewMode === 'graph'
-              ? 'Component Dependency Network'
-              : viewMode === 'table'
-              ? 'Component Relationship Table'
-              : 'Failure Detection & Alert System'}
+            Failure Detection & Alert System
           </p>
         </div>
       </header>

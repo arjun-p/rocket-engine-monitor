@@ -95,9 +95,9 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
   // Fetch failure analysis data
   useEffect(() => {
     async function loadData() {
-      // Create abort controller for 30-second timeout (database queries can be slow)
+      // Create abort controller for 6-minute timeout (multi-database Vadalog queries can be slow)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 seconds
+      const timeoutId = setTimeout(() => controller.abort(), 360000); // 6 minutes (360 seconds)
 
       try {
         setLoading(true);
@@ -132,7 +132,7 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
       } catch (err) {
         clearTimeout(timeoutId);
         if (err instanceof Error && err.name === 'AbortError') {
-          setError('Request timed out after 30 seconds. Database queries may be slow.');
+          setError('Request timed out after 6 minutes. Multi-database queries are taking longer than expected.');
         } else {
           setError(err instanceof Error ? err.message : 'Failed to load analysis');
         }
