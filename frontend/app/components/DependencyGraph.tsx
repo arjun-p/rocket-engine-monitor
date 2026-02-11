@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import cytoscape, { Core, ElementDefinition } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
+import NodeDetailCard from './NodeDetailCard';
 
 // Register dagre extension
 cytoscape.use(dagre);
@@ -23,9 +24,10 @@ interface Relationship {
 
 interface DegreeCentralityNode {
   component_id: string;
-  in_degree: number;
-  out_degree: number;
-  total_degree: number;
+  degree: number;
+  centrality: number;
+  centrality_percent: number;
+  rank: number;
 }
 
 interface DegreeCentralityResponse {
@@ -49,6 +51,15 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
   const [degreeCentrality, setDegreeCentrality] = useState<DegreeCentralityResponse | null>(null);
+  const [selectedNode, setSelectedNode] = useState<DegreeCentralityNode | null>(null);
+
+  // Create centrality map for quick lookup when nodes are clicked
+  const centralityMap = useMemo(() => {
+    if (!degreeCentrality?.nodes) return new Map<string, DegreeCentralityNode>();
+    return new Map(
+      degreeCentrality.nodes.map(node => [node.component_id, node])
+    );
+  }, [degreeCentrality]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -78,11 +89,11 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
         // Create degree lookup map for efficient access
         const degreeMap = new Map<string, number>();
         degreeCentralityData.nodes.forEach(node => {
-          degreeMap.set(node.component_id, node.total_degree);
+          degreeMap.set(node.component_id, node.degree);
         });
 
         const maxDegree = degreeCentralityData.metadata.max_degree;
-        const minDegree = Math.min(...degreeCentralityData.nodes.map(n => n.total_degree));
+        const minDegree = Math.min(...degreeCentralityData.nodes.map(n => n.degree));
 
         // Transform to Cytoscape format with degree data
         const nodes: ElementDefinition[] = components.map((comp) => {
@@ -121,11 +132,7 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
               selector: 'node',
               style: {
                 'background-color': '#3b82f6', // blue-500
-                label: (ele: any) => {
-                  const name = ele.data('label');
-                  const degree = ele.data('degree');
-                  return degree !== undefined ? `${name}\n(${degree})` : name;
-                },
+                label: 'data(label)', // Just show component name
                 color: '#e2e8f0', // slate-200
                 'text-valign': 'center',
                 'text-halign': 'center',
@@ -225,6 +232,13 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
         // Add interaction handlers
         cy.on('tap', 'node', (evt) => {
           const node = evt.target;
+          const componentId = node.data('id');
+
+          // Get full centrality data from map and show detail card
+          const nodeData = centralityMap.get(componentId);
+          if (nodeData) {
+            setSelectedNode(nodeData);
+          }
 
           // Reset all highlights
           cy.elements().removeClass('highlighted');
@@ -243,7 +257,8 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
 
         cy.on('tap', (evt) => {
           if (evt.target === cy) {
-            // Clicked on background - reset all highlights
+            // Clicked on background - reset all highlights and close card
+            setSelectedNode(null);
             cy.elements().removeClass('highlighted');
             cy.nodes().style({
               'border-width': 4,
@@ -316,6 +331,15 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
       )}
 
       <div ref={containerRef} className="h-full w-full bg-slate-950" />
+
+      {/* Node Detail Card */}
+      {selectedNode && (
+        <NodeDetailCard
+          nodeData={selectedNode}
+          totalNodes={degreeCentrality?.metadata.total_nodes || 30}
+          onClose={() => setSelectedNode(null)}
+        />
+      )}
     </div>
   );
 }
