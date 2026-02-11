@@ -2,14 +2,40 @@
 
 import { useEffect, useRef, useState } from 'react';
 import cytoscape, { Core, ElementDefinition } from 'cytoscape';
+import dagre from 'cytoscape-dagre';
+
+// Register dagre extension
+cytoscape.use(dagre);
 
 interface Component {
   id: string;
+  symptomCode: string | null;
+  isObservable: string;
+  status: string;
+  relatedSymptom: string | null;
+  team: string;
 }
 
 interface Relationship {
   source: string;
   target: string;
+}
+
+interface DegreeCentralityNode {
+  component_id: string;
+  in_degree: number;
+  out_degree: number;
+  total_degree: number;
+}
+
+interface DegreeCentralityResponse {
+  nodes: DegreeCentralityNode[];
+  metadata: {
+    total_nodes: number;
+    average_degree: number;
+    most_central_component: string | null;
+    max_degree: number;
+  };
 }
 
 interface DependencyGraphProps {
@@ -22,6 +48,7 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
+  const [degreeCentrality, setDegreeCentrality] = useState<DegreeCentralityResponse | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -30,23 +57,46 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
       try {
         setLoading(true);
 
-        // Fetch components and relationships in parallel
-        const [componentsRes, relationshipsRes] = await Promise.all([
+        // Fetch components, relationships, and degree centrality in parallel
+        const [componentsRes, relationshipsRes, degreeCentralityRes] = await Promise.all([
           fetch(`${apiUrl}/components`),
           fetch(`${apiUrl}/relationships`),
+          fetch(`${apiUrl}/degree-centrality`),
         ]);
 
-        if (!componentsRes.ok || !relationshipsRes.ok) {
+        if (!componentsRes.ok || !relationshipsRes.ok || !degreeCentralityRes.ok) {
           throw new Error('Failed to fetch graph data');
         }
 
-        const components: string[] = await componentsRes.json();
+        const components: Component[] = await componentsRes.json();
         const relationships: Relationship[] = await relationshipsRes.json();
+        const degreeCentralityData: DegreeCentralityResponse = await degreeCentralityRes.json();
 
-        // Transform to Cytoscape format
-        const nodes: ElementDefinition[] = components.map((id) => ({
-          data: { id, label: id },
-        }));
+        // Store degree centrality data in state
+        setDegreeCentrality(degreeCentralityData);
+
+        // Create degree lookup map for efficient access
+        const degreeMap = new Map<string, number>();
+        degreeCentralityData.nodes.forEach(node => {
+          degreeMap.set(node.component_id, node.total_degree);
+        });
+
+        const maxDegree = degreeCentralityData.metadata.max_degree;
+        const minDegree = Math.min(...degreeCentralityData.nodes.map(n => n.total_degree));
+
+        // Transform to Cytoscape format with degree data
+        const nodes: ElementDefinition[] = components.map((comp) => {
+          const degree = degreeMap.get(comp.id) || 0;
+          return {
+            data: {
+              id: comp.id,
+              label: comp.id,
+              degree: degree, // Store degree in node data
+              team: comp.team,
+              status: comp.status,
+            },
+          };
+        });
 
         const edges: ElementDefinition[] = relationships.map((rel, index) => ({
           data: {
@@ -71,18 +121,22 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
               selector: 'node',
               style: {
                 'background-color': '#3b82f6', // blue-500
-                label: 'data(label)',
+                label: (ele: any) => {
+                  const name = ele.data('label');
+                  const degree = ele.data('degree');
+                  return degree !== undefined ? `${name}\n(${degree})` : name;
+                },
                 color: '#e2e8f0', // slate-200
                 'text-valign': 'center',
                 'text-halign': 'center',
-                'font-size': '10px',
+                'font-size': '12px',
                 'font-family': 'monospace',
-                width: 40,
-                height: 40,
-                'border-width': 2,
+                width: 80,
+                height: 80,
+                'border-width': 4,
                 'border-color': '#60a5fa', // blue-400
                 'text-wrap': 'wrap',
-                'text-max-width': '80px',
+                'text-max-width': '150px',
               },
             },
             {
@@ -90,10 +144,8 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
               style: {
                 width: 2,
                 'line-color': '#475569', // slate-600
-                'target-arrow-color': '#475569',
-                'target-arrow-shape': 'triangle',
+                'target-arrow-shape': 'none', // No arrows for cleaner view
                 'curve-style': 'bezier',
-                'arrow-scale': 1,
               },
             },
             {
@@ -114,22 +166,61 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
             },
           ],
           layout: {
-            name: 'cose', // Force-directed layout
+            name: 'dagre',
+            rankDir: 'TB',           // Top to Bottom - leaf components at bottom
+            nodeSep: 120,            // Horizontal spread
+            rankSep: 15,             // Short arrows
             animate: true,
-            animationDuration: 1000,
-            nodeRepulsion: 8000,
-            idealEdgeLength: 100,
-            edgeElasticity: 100,
-            nestingFactor: 1.2,
-            gravity: 1,
-            numIter: 1000,
-            initialTemp: 200,
-            coolingFactor: 0.95,
-            minTemp: 1.0,
-          },
+            animationDuration: 500,
+          } as any,
         });
 
         cyRef.current = cy;
+
+        // Apply degree centrality sizing from backend data
+        cy.one('layoutstop', () => {
+          setTimeout(() => {
+            console.log('=== DEGREE CENTRALITY SIZING DEBUG ===');
+            console.log('Max degree:', maxDegree, 'Min degree:', minDegree);
+            console.log('Total nodes in degreeMap:', degreeMap.size);
+
+            // Apply proportional sizing based on backend degree centrality
+            cy.nodes().forEach(node => {
+              const nodeId = node.id();
+              const degree = degreeMap.get(nodeId);
+
+              if (degree === undefined) {
+                console.warn(`No degree found for node: ${nodeId}`);
+                return;
+              }
+
+              // Use exponential scaling for more visual distinction
+              const baseSize = 50;
+              const maxSize = 150;
+
+              // Normalize to 0-1 range
+              const normalizedDegree = maxDegree > minDegree
+                ? (degree - minDegree) / (maxDegree - minDegree)
+                : 0.5;
+
+              // Apply exponential curve for more dramatic differences
+              const scaledValue = Math.pow(normalizedDegree, 0.7); // Soften the curve slightly
+              const size = baseSize + (scaledValue * (maxSize - baseSize));
+
+              console.log(`${nodeId}: degree=${degree}, normalized=${normalizedDegree.toFixed(2)}, size=${size.toFixed(0)}px`);
+
+              node.style({
+                'width': size,
+                'height': size,
+                'font-size': `${10 + scaledValue * 8}px`, // 10-18px font scaling
+              });
+            });
+
+            cy.fit();                      // Fit all elements
+            cy.zoom(cy.zoom() * 0.85);     // Zoom out 15% for padding
+            cy.center();
+          }, 100);
+        });
 
         // Add interaction handlers
         cy.on('tap', 'node', (evt) => {
@@ -155,7 +246,7 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
             // Clicked on background - reset all highlights
             cy.elements().removeClass('highlighted');
             cy.nodes().style({
-              'border-width': 2,
+              'border-width': 4,
               'border-color': '#60a5fa',
             });
           }
@@ -210,6 +301,14 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
             <p className="text-slate-400">Edges:</p>
             <p className="text-xl font-bold text-green-400">{stats.edges}</p>
           </div>
+          {degreeCentrality?.metadata.most_central_component && (
+            <div className="mt-3 border-t border-slate-700 pt-3 text-sm">
+              <p className="text-slate-400 text-xs">Most Connected:</p>
+              <p className="text-sm font-semibold text-orange-400">
+                {degreeCentrality.metadata.most_central_component.replace(/_/g, ' ')}
+              </p>
+            </div>
+          )}
           <div className="mt-4 border-t border-slate-700 pt-4 text-xs text-slate-500">
             💡 Click nodes to highlight connections
           </div>

@@ -1,0 +1,49 @@
+% ============================================================================
+% Degree Centrality - Prometheux Built-in Graph Analytics
+% ============================================================================
+% Uses Prometheux's normalized degree centrality calculation
+% Returns values between 0 and 1, where higher values indicate more central nodes
+
+@bind("component",
+      "csv useHeaders='true', delimiter=','",
+      "s3a://{s3_bucket}",
+      "components.csv").
+
+@bind("linked_to",
+      "csv useHeaders='true', delimiter=','",
+      "s3a://{s3_bucket}",
+      "component_linked_to_component.csv").
+
+% Create directed edges from the linked_to relationship
+edge(Parent, Child) :- linked_to(Parent, Child).
+
+% Create undirected edges (bidirectional) for degree centrality
+edge_undirected(X, Y) :- edge(X, Y).
+edge_undirected(Y, X) :- edge(X, Y).
+
+% Define all nodes in the graph
+node(X) :- edge_undirected(X, Y).
+node(Y) :- edge_undirected(X, Y).
+
+% Also include isolated components (nodes with no edges)
+node(X) :- component(X, _, _, _, _, _).
+
+% Count total number of nodes
+num_nodes(Num) :- node(_), Num = mcount().
+
+% Calculate the degree of each node (number of connections)
+node_degree(N1, Degree) :-
+    edge_undirected(N1, _),
+    Degree = mcount().
+
+% Calculate normalized degree centrality (0 to 1)
+% Formula: DC = Degree / (N - 1)
+% Returns: Node, Degree, NormalizedCentrality
+degree_centrality(N, Degree, DC) :-
+    node_degree(N, Degree),
+    num_nodes(Num),
+    Nodes = Num - 1,
+    DC = Degree / Nodes.
+
+@output("degree_centrality").
+@post("degree_centrality", "orderby(-3)").

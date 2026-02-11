@@ -1,0 +1,154 @@
+% ============================================================================
+% Data Source Bindings
+% ============================================================================
+
+% S3 CSV Files
+@bind("component",
+      "csv header='true', delimiter=','",
+      "s3a://prometheux-public-data-bucket",
+      "components.csv").
+
+@bind("linked_to",
+      "csv header='true', delimiter=','",
+      "s3a://prometheux-public-data-bucket",
+      "component_linked_to_component.csv").
+
+% PostgreSQL - Team Leaders (primary source)
+@bind("employee_psql_table",
+      "postgresql host='{psql_host}', port='{psql_port}', username='{psql_user}', password='{psql_password}'",
+      "{psql_db}",
+      "employee_psql_table").
+
+% MariaDB - Team Leaders (backup source)
+@bind("employee_mariadb",
+      "mariadb host='{maria_host}', port='{maria_port}', username='{maria_user}', password='{maria_password}'",
+      "{maria_db}",
+      "employee_mariadb").
+
+% Neo4j - Team Leaders (graph source)
+@bind("employee_neo4j",
+      "neo4j host='{neo4j_host}', port='{neo4j_port}', username='{neo4j_user}', password='{neo4j_password}'",
+      "{neo4j_db}",
+      "(:Employee)").
+
+
+% ============================================================================
+% Stage 1: Initial Failure Detection
+% ============================================================================
+
+failed_observable(ComponentID) :-
+    component(ComponentID, _, "yes", "failed", _, _).
+
+non_observable(ComponentID) :-
+    component(ComponentID, _, "no", _, _, _).
+
+@output("failed_observable").
+
+
+% ============================================================================
+% Stage 2: Recursive Failure Propagation (Parent → Child chains)
+% ============================================================================
+
+% Direct chain: Parent → Failed Observable Child
+failure_chain(Parent, Child) :-
+    linked_to(Parent, Child),
+    failed_observable(Child).
+
+% Recursive chain: Parent → Non-Observable X → Failed Component
+failure_chain(Parent, X) :-
+    linked_to(Parent, X),
+    non_observable(X),
+    failure_chain(X, _).
+
+@output("failure_chain").
+
+
+% ============================================================================
+% Stage 3: Hotspot Identification (Reverse propagation Child → Parent)
+% ============================================================================
+
+% Reverse propagation: which failed components propagate to which ancestors
+propagates_to(Child, Parent) :-
+    failure_chain(Parent, Child).
+
+propagates_to(Child, Ancestor) :-
+    propagates_to(Child, Parent),
+    failure_chain(Ancestor, Parent).
+
+@output("propagates_to").
+
+% Count how many failed sensors affect each component
+total_count(Component, Count) :-
+    propagates_to(FailedComponent, Component),
+    failed_observable(FailedComponent),
+    Count = mcount(FailedComponent).
+
+@output("total_count").
+
+% Find maximum count
+max_count(Max) :-
+    total_count(_, Count),
+    Max = mmax(Count).
+
+@output("max_count").
+
+% Hotspots: components with maximum failed sensor impact (with count)
+hotspot(Component, Count) :-
+    total_count(Component, Count),
+    max_count(Count).
+
+@output("hotspot").
+
+% Track which failed sensors affect each hotspot
+hotspot_affected_by(Hotspot, FailedSensor) :-
+    hotspot(Hotspot, _),
+    propagates_to(FailedSensor, Hotspot),
+    failed_observable(FailedSensor).
+
+@output("hotspot_affected_by").
+
+% Root cause: hotspot with no parents (end of the failure chain)
+hotspot_candidates(Component) :- hotspot(Component, _).
+has_dependent(Component) :- failure_chain(_, Component).
+rootcause(Component) :- hotspot_candidates(Component), not has_dependent(Component).
+
+@output("rootcause").
+
+
+% ============================================================================
+% Stage 4: Team Leader Alerts
+% ============================================================================
+
+% Fetch team leaders from each database
+% PostgreSQL schema: Dept ID, Last Name, Role, First Name, Team
+team_leaders_psql(ID, First, Last, Team) :-
+    employee_psql_table(ID, Last, "Team Leader", First, Team).
+
+% MariaDB schema: Dept ID, First Name, Last Name, Role, Team
+team_leaders_maria(ID, First, Last, Team) :-
+    employee_mariadb(ID, First, Last, "Team Leader", Team).
+
+% Neo4j schema: Employee ID, First Name, Role, Team, Last Name, TL ID?, Reports to Dept ID
+team_leaders_neo(ID, First, Last, Team) :-
+    employee_neo4j(_, First, "Team Leader", Team, Last, ID, _),
+    is_not_null(ID).
+
+% Combine team leaders from all sources (auto-deduplicates)
+team_leader(ID, First, Last, Team) :-
+    team_leaders_psql(ID, First, Last, Team).
+
+team_leader(ID, First, Last, Team) :-
+    team_leaders_maria(ID, First, Last, Team).
+
+team_leader(ID, First, Last, Team) :-
+    team_leaders_neo(ID, First, Last, Team).
+
+@output("team_leader").
+
+% Generate alerts: Component, Team, LeaderID, FirstName, LastName, SensorCount
+alert(Component, Team, LeaderID, FirstName, LastName, SensorCount) :-
+    hotspot(Component, SensorCount),
+    component(Component, _, _, _, _, Team),
+    team_leader(LeaderID, FirstName, LastName, Team).
+
+@output("alert").
