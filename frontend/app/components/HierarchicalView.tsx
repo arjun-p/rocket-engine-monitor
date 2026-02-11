@@ -73,7 +73,7 @@ export default function HierarchicalView({ apiUrl }: HierarchicalViewProps) {
                 'text-halign': 'center',
                 'font-size': '11px',
                 'font-family': 'monospace',
-                'font-weight': '600',
+                'font-weight': 600,
                 width: 60,
                 height: 50,
                 shape: 'roundrectangle',
