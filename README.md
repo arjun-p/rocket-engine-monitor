@@ -15,7 +15,7 @@ An end-to-end application that automatically detects, analyzes, and traces failu
 - **Alerts responsible teams** - Automatically notifies the right team leader
 - **Visualizes impact** - Interactive network graphs showing the full failure cascade
 
-**Key Innovation:** Combines declarative logic programming (Vadalog/Datalog) with interactive graph visualization to turn raw sensor data into actionable intelligence.
+**Key Innovation:** Combines declarative logic programming (Vadalog) with interactive graph visualization to turn raw sensor data into actionable intelligence.
 
 ---
 
@@ -50,7 +50,7 @@ An end-to-end application that automatically detects, analyzes, and traces failu
 ## Tech Stack
 
 **Frontend**: Next.js 14, TypeScript, Cytoscape.js, Tailwind CSS
-**Backend**: FastAPI, Vadalog/Datalog reasoning engine
+**Backend**: FastAPI, Vadalog reasoning engine
 **Deployment**: Vercel (frontend), Railway (backend)
 
 ---
@@ -97,10 +97,6 @@ Required environment variables:
 **Backend** (`.env`):
 ```bash
 PMTX_TOKEN=              # Prometheux API token
-POSTGRES_HOST=           # Employee database
-MARIADB_HOST=            # Component metadata
-NEO4J_HOST=              # Relationship graph
-AWS_ACCESS_KEY_ID=       # S3 test results
 ```
 
 **Frontend** (`.env.local`):
