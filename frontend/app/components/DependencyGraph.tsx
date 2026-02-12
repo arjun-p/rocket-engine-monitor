@@ -75,8 +75,6 @@ interface DependencyGraphProps {
 export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const cyRef = useRef<Core | null>(null);
-  const isInitialMount = useRef(true);
-  const graphInitialized = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState({ nodes: 0, edges: 0 });
@@ -86,6 +84,9 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
 
   useEffect(() => {
     if (!containerRef.current) return;
+
+    // Prevent double initialization - check if Cytoscape instance already exists
+    if (cyRef.current) return;
 
     async function loadGraph() {
       try {
@@ -210,9 +211,6 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
             cy.zoom(cy.zoom() * 0.85);     // Zoom out 15% for padding
             cy.center();
 
-            // Mark graph as initialized to prevent layout re-run
-            graphInitialized.current = true;
-
             // Auto-select the most central node (rank #1)
             if (degreeCentralityData.nodes.length > 0) {
               const topNode = degreeCentralityData.nodes[0]; // Rank #1
@@ -285,17 +283,11 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
         cyRef.current.destroy();
         cyRef.current = null;
       }
-      graphInitialized.current = false;
     };
   }, [apiUrl]);
 
-  // Re-run layout when layout type changes (skip until graph is initialized)
+  // Re-run layout when layout type changes
   useEffect(() => {
-    // Skip until graph is fully initialized to avoid double animation
-    if (!graphInitialized.current) {
-      return;
-    }
-
     if (!cyRef.current) return;
 
     const cy = cyRef.current;
@@ -351,16 +343,20 @@ export default function DependencyGraph({ apiUrl }: DependencyGraphProps) {
         <div className="absolute bottom-4 left-4 z-10 group">
           <button
             onClick={() => setLayoutType(prev => prev === 'hierarchy' ? 'network' : 'hierarchy')}
-            className="rounded-lg bg-slate-800 border border-slate-700 p-2.5 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all shadow-lg"
-            title="Toggle view"
+            className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all shadow-lg flex items-center gap-3"
+            title="Toggle layout"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-7 h-7 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
             </svg>
+            <div className="text-left">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 leading-tight">Layout</div>
+              <div className="text-xs font-semibold leading-tight">{layoutType === 'hierarchy' ? 'Hierarchy' : 'Network'}</div>
+            </div>
           </button>
           {/* Tooltip */}
           <div className="absolute bottom-full left-0 mb-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-            Toggle view
+            Toggle layout algorithm
           </div>
         </div>
       )}

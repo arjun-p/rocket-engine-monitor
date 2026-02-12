@@ -1,92 +1,150 @@
-# Rocket Engine Failure Monitor
+# 🚀 Rocket Engine Failure Monitor
 
-Real-time monitoring and analysis system for rocket engine component failures, powered by the [Prometheux Platform](https://prometheux.ai).
+Real-time intelligent monitoring and root cause analysis system for rocket engine component failures. Built with the [Prometheux Platform](https://prometheux.ai) reasoning engine.
+
+**Repository**: [github.com/arjun-p/rocket-engine-monitor](https://github.com/arjun-p/rocket-engine-monitor)
+
+---
+
+## Overview
+
+An end-to-end application that automatically detects, analyzes, and traces failure propagation across 30+ interconnected rocket engine components. When sensors fail, the system:
+
+- **Identifies failure chains** - Traces how failures propagate through component dependencies
+- **Pinpoints root causes** - Uses graph analytics to find convergence points where multiple failures originate
+- **Alerts responsible teams** - Automatically notifies the right team leader
+- **Visualizes impact** - Interactive network graphs showing the full failure cascade
+
+**Key Innovation:** Combines declarative logic programming (Vadalog/Datalog) with interactive graph visualization to turn raw sensor data into actionable intelligence.
+
+---
 
 ## Features
 
-- **RESTful API** for component data and failure analysis
-- **Vadalog Reasoning Engine** integration for failure propagation
+### 🔍 Intelligent Failure Analysis
+- **4-stage reasoning pipeline**: Sensor detection → failure chains → hotspot identification → automated alerting
+- **Root cause detection**: Identifies convergence points where multiple failures originate
+- **Multi-database integration**: Queries across PostgreSQL, MariaDB, Neo4j, and S3
+- **Team-based alerts**: Routes notifications to responsible engineering teams
+
+### 📊 Interactive Visualizations
+
+#### Network View
+- Dual layout modes (hierarchical/force-directed)
+- Degree centrality analysis with component rankings
+- Scrollable metrics table with live data
+- Auto-select most critical component on load
+
+#### Failure Analysis View
+- Real-time animated failure propagation
+- Interactive exploration (click sensors to trace impact)
+- Hotspot panel with affected components
+- Pulsing visual emphasis on root cause
+
+#### Table View
+- Searchable/sortable component relationships
+- Clean tabular data exploration
+
+---
+
+## Tech Stack
+
+**Frontend**: Next.js 14, TypeScript, Cytoscape.js, Tailwind CSS
+**Backend**: FastAPI, Vadalog/Datalog reasoning engine
+**Deployment**: Vercel (frontend), Railway (backend)
+
+---
 
 ## Quick Start
 
-### Prerequisites
+### Backend
+```bash
+cd backend
+pip install -r requirements.txt
+cp .env.example .env  # Add credentials
+uvicorn main:app --reload --port 8000
+```
 
-- Python 3.10+
-- Prometheux API token
+### Frontend
+```bash
+cd frontend
+npm install
+cp .env.local.example .env.local  # Set API_URL
+npm run dev
+```
 
-### Setup
+Visit: http://localhost:3000
 
-1. **Clone and navigate:**
-   ```bash
-   git clone <your-repo-url>
-   cd rocket-engine-monitor
-   ```
-
-2. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your PMTX_TOKEN
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   make install
-   ```
-
-4. **Start server:**
-   ```bash
-   make dev
-   ```
-
-5. **Open API docs:**
-   ```
-   http://localhost:8000/docs
-   ```
+---
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | API information |
-| `/health` | GET | Health check with Prometheux status |
-| `/components` | GET | Rocket engine components |
+| Endpoint | Description |
+|----------|-------------|
+| `/components` | All components with metadata |
+| `/relationships` | Dependency graph (parent → child) |
+| `/degree-centrality` | Network centrality analysis with rankings |
+| `/failure-analysis` | Full 4-stage failure analysis with alerts |
 
-**Interactive Docs:** Visit `/docs` for Swagger UI
+**Docs**: http://localhost:8000/docs
 
-## Development Commands
+---
 
+## Configuration
+
+Required environment variables:
+
+**Backend** (`.env`):
 ```bash
-make install    # Install dependencies
-make dev        # Start with auto-reload
-make start      # Start production server
-make test       # Run tests
-make clean      # Clean cache files
+PMTX_TOKEN=              # Prometheux API token
+POSTGRES_HOST=           # Employee database
+MARIADB_HOST=            # Component metadata
+NEO4J_HOST=              # Relationship graph
+AWS_ACCESS_KEY_ID=       # S3 test results
 ```
+
+**Frontend** (`.env.local`):
+```bash
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+See `.env.example` for complete list.
+
+---
+
+## Key Technical Highlights
+
+- **Vadalog reasoning**: Declarative logic rules for recursive failure propagation
+- **Performance optimizations**: Parallel fetching, layout memoization, 6-minute timeout for complex queries
+- **Interactive UX**: Live node highlighting, auto-selection, dual-layout toggle
+- **Production-ready**: Error handling, responsive design, deployed on cloud
+
+---
 
 ## Project Structure
 
 ```
 rocket-engine-monitor/
 ├── backend/
-│   ├── main.py           # FastAPI application
-│   ├── models.py         # Pydantic models
-│   └── requirements.txt  # Dependencies
-├── data/
-│   ├── components.csv
-│   └── component_linked_to_component.csv
-├── Makefile
-└── .env.example
+│   ├── main.py                    # FastAPI routes
+│   ├── vadalog/                   # Reasoning programs
+│   │   ├── failure_analysis.vada
+│   │   ├── get_components.vada
+│   │   └── get_relationships.vada
+│   └── requirements.txt
+├── frontend/
+│   ├── app/
+│   │   ├── page.tsx               # Main dashboard
+│   │   └── components/
+│   │       ├── DependencyGraph.tsx      # Network View
+│   │       ├── FailureAnalysisView.tsx  # Failure Analysis
+│   │       ├── TableView.tsx            # Table View
+│   │       └── NodeDetailCard.tsx       # Detail popup
+│   └── package.json
+└── README.md
 ```
 
-## Configuration
-
-Environment variables (see `.env.example`):
-
-- `ENV` - Environment mode (development/production)
-- `PMTX_TOKEN` - Prometheux API authentication token
-- `PROMETHEUX_BASE_URL` - Prometheux API base URL
-- `CORS_ORIGINS` - Allowed CORS origins (optional)
-
+---
 
 ## License
 

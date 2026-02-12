@@ -515,13 +515,36 @@ async def get_failure_analysis():
                 reverse=True
             )
 
-        # Parse Root Cause (from Vadalog rootcause output)
-        root_cause = None
-        if "rootcause" in result_set and result_set["rootcause"]:
-            rootcause_component = result_set["rootcause"][0][0]  # rootcause returns [[Component]]
-            # Find the rootcause in hotspot_data to get full details
-            if rootcause_component in hotspot_data:
-                root_cause = hotspot_data[rootcause_component]
+        # Parse Degree Centrality (for root cause enrichment)
+        degree_centrality_map = {}
+        if "degree_centrality" in result_set:
+            for item in result_set["degree_centrality"]:
+                component_id = item[0]
+                centrality_value = item[1]
+                degree_centrality_map[component_id] = centrality_value
+
+        # Parse Root Cause - METHOD 1: Default (No Parents)
+        root_cause_default = None
+        if "rootcause_default" in result_set and result_set["rootcause_default"]:
+            component = result_set["rootcause_default"][0][0]
+            if component in hotspot_data:
+                root_cause_default = hotspot_data[component].copy()
+
+        # Parse Root Cause - METHOD 2: Combined (Convergence + In-Degree)
+        root_cause_combined = None
+        if "rootcause_combined" in result_set and result_set["rootcause_combined"]:
+            item = result_set["rootcause_combined"][0]
+            component = item[0]
+            sensor_count = item[1]
+            indegree = item[2]
+
+            if component in hotspot_data:
+                root_cause_combined = hotspot_data[component].copy()
+                root_cause_combined["centrality"] = indegree
+                root_cause_combined["method"] = "combined"
+
+        # Backward compatibility: default method
+        root_cause = root_cause_default
 
         # Stage 4: Alerts (Component, Team, LeaderID, FirstName, LastName, SensorCount)
         alerts = []
@@ -565,7 +588,12 @@ async def get_failure_analysis():
             },
             "stage3": {
                 "hotspots": hotspots,
-                "rootCause": root_cause
+                "rootCause": root_cause,  # Backward compatibility
+                "rootCauseMethods": {
+                    "default": root_cause_default,
+                    "combined": root_cause_combined
+                },
+                "degreeCentrality": degree_centrality_map
             },
             "stage4": {
                 "alerts": alerts

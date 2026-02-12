@@ -107,10 +107,73 @@ hotspot_affected_by(Hotspot, FailedSensor) :-
 
 @output("hotspot_affected_by").
 
-% Root cause: hotspot with no parents (end of the failure chain)
+
+% ============================================================================
+% Degree Centrality Calculation (for root cause analysis)
+% ============================================================================
+
+% Create undirected graph edges from component relationships
+graph_edge(X, Y) :- linked_to(X, Y).
+graph_edge(Y, X) :- linked_to(X, Y).
+
+% Compute normalized degree centrality using built-in #DC operator
+degree_centrality(Node, DC) :- #DC(graph_edge).  % fix required -  add "type=in"
+
+@output("degree_centrality").
+
+
+% ============================================================================
+% Root Cause Detection Methods
+% ============================================================================
+
+% Shared helper: check if component has parents in failure chain
 hotspot_candidates(Component) :- hotspot(Component, _).
 has_dependent(Component) :- failure_chain(_, Component).
-rootcause(Component) :- hotspot_candidates(Component), not has_dependent(Component).
+
+
+% METHOD 1: Default (No Parents)
+% Root cause = hotspot with no parents in failure chain
+rootcause_default(Component) :-
+    hotspot_candidates(Component),
+    not has_dependent(Component).
+
+@output("rootcause_default").
+
+
+% METHOD 2: Combined (Lexicographic: Convergence + In-Degree)
+% Priority 1: Most sensor convergence
+% Priority 2: Highest in-degree (if tied on sensor count)
+
+% Find maximum sensor count among all hotspots
+max_sensor_count(Max) :-
+    hotspot(_, Count),
+    Max = mmax(Count).
+
+% Top hotspots with maximum sensor count
+top_hotspots(Component, SensorCount) :-
+    hotspot(Component, SensorCount),
+    max_sensor_count(SensorCount).
+
+% Join top hotspots with in-degree centrality
+top_hotspot_with_indegree(Component, SensorCount, InDegree) :-
+    top_hotspots(Component, SensorCount),
+    degree_centrality(Component, InDegree).
+
+% Find maximum in-degree among top hotspots (tie-breaker)
+max_indegree_among_top_hotspots(Max) :-
+    top_hotspot_with_indegree(_, _, InDegree),
+    Max = mmax(InDegree).
+
+% Root cause = hotspot with (max sensors, max in-degree if tied)
+rootcause_combined(Component, SensorCount, InDegree) :-
+    top_hotspot_with_indegree(Component, SensorCount, InDegree),
+    max_indegree_among_top_hotspots(InDegree).
+
+@output("rootcause_combined").
+
+
+% Backward compatibility: default method
+rootcause(Component) :- rootcause_default(Component).
 
 @output("rootcause").
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import cytoscape, { Core, ElementDefinition } from 'cytoscape';
 import dagre from 'cytoscape-dagre';
 
@@ -16,6 +16,8 @@ interface Hotspot {
   component: string;
   affectedSensors: string[];
   impactScore: number;
+  centrality?: number; // Optional - only for combined method
+  method?: string; // Optional - method identifier
 }
 
 interface ComponentMetadata {
@@ -36,7 +38,12 @@ interface FailureAnalysisData {
   };
   stage3: {
     hotspots: Hotspot[];
-    rootCause: Hotspot | null;
+    rootCause: Hotspot | null; // Backward compatibility
+    rootCauseMethods?: {
+      default: Hotspot | null;
+      combined: Hotspot | null;
+    };
+    degreeCentrality?: Record<string, number>;
   };
   stage4: {
     alerts: any[];
@@ -85,6 +92,8 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
   const [components, setComponents] = useState<Map<string, ComponentMetadata>>(new Map());
   const [selectedSensor, setSelectedSensor] = useState<string | null>(null);
   const [layoutType, setLayoutType] = useState<LayoutType>('hierarchy');
+  const [rootCauseMethod, setRootCauseMethod] = useState<'default' | 'combined'>('default');
+  const [showLegend, setShowLegend] = useState(true);
   const [hoveredNode, setHoveredNode] = useState<{
     id: string;
     x: number;
@@ -92,226 +101,22 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
     metadata: ComponentMetadata;
   } | null>(null);
 
-  // Fetch failure analysis data
-  useEffect(() => {
-    async function loadData() {
-      // Create abort controller for 6-minute timeout (multi-database Vadalog queries can be slow)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 360000); // 6 minutes (360 seconds)
+  // Select root cause based on selected method
+  const rootCause = useMemo(() => {
+    if (!data?.stage3) return null;
 
-      try {
-        setLoading(true);
+    const methods = data.stage3.rootCauseMethods;
+    if (!methods) return data.stage3.rootCause; // Fallback to backward compatibility
 
-        // Fetch both failure analysis data and component metadata in parallel
-        const [analysisResponse, componentsResponse] = await Promise.all([
-          fetch(`${apiUrl}/failure-analysis`, { signal: controller.signal }),
-          fetch(`${apiUrl}/components`)
-        ]);
-
-        clearTimeout(timeoutId);
-
-        if (!analysisResponse.ok) {
-          throw new Error('Failed to fetch failure analysis data');
-        }
-        if (!componentsResponse.ok) {
-          throw new Error('Failed to fetch component metadata');
-        }
-
-        const analysisData: FailureAnalysisData = await analysisResponse.json();
-        const componentsData: ComponentMetadata[] = await componentsResponse.json();
-
-        // Convert components array to Map for O(1) lookup
-        const componentsMap = new Map<string, ComponentMetadata>();
-        componentsData.forEach(comp => {
-          componentsMap.set(comp.id, comp);
-        });
-
-        setData(analysisData);
-        setComponents(componentsMap);
-        setLoading(false);
-      } catch (err) {
-        clearTimeout(timeoutId);
-        if (err instanceof Error && err.name === 'AbortError') {
-          setError('Request timed out after 6 minutes. Multi-database queries are taking longer than expected.');
-        } else {
-          setError(err instanceof Error ? err.message : 'Failed to load analysis');
-        }
-        setLoading(false);
-      }
+    if (rootCauseMethod === 'combined') {
+      return methods.combined;
+    } else {
+      return methods.default;
     }
-
-    loadData();
-  }, [apiUrl]);
-
-  // Initialize Cytoscape graph once when data loads
-  useEffect(() => {
-    if (!containerRef.current || !data || components.size === 0) return;
-
-    // Get all unique components from failure chains
-    const componentSet = new Set<string>();
-    data.stage1.failedSensors.forEach(sensor => componentSet.add(sensor));
-    data.stage2.failureChains.forEach(chain => {
-      componentSet.add(chain.parent);
-      componentSet.add(chain.child);
-    });
-
-    // Create nodes
-    const nodes: ElementDefinition[] = Array.from(componentSet).map((comp) => ({
-      data: {
-        id: comp,
-        label: comp.replace(/_/g, ' '),
-      },
-    }));
-
-    // Create edges from failure chains
-    // Arrow direction: child → parent (showing failure propagation upward)
-    const edges: ElementDefinition[] = data.stage2.failureChains.map((chain, index) => ({
-      data: {
-        id: `edge-${index}`,
-        source: chain.child,   // Failure starts at child
-        target: chain.parent,  // Propagates to parent
-      },
-    }));
-
-    // Initialize Cytoscape only once
-    const cy = cytoscape({
-      container: containerRef.current,
-      elements: [...nodes, ...edges],
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'background-color': '#64748b', // Default: slate-600
-            label: 'data(label)',
-            color: '#e2e8f0', // slate-200
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'font-size': '14px',
-            'font-family': 'monospace',
-            width: 80,
-            height: 80,
-            'border-width': 4,
-            'border-color': '#475569', // slate-700
-            'text-wrap': 'wrap',
-            'text-max-width': '150px',
-          },
-        },
-        {
-          selector: 'edge',
-          style: {
-            width: 2,
-            'line-color': '#475569', // slate-600
-            'target-arrow-color': '#475569',
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'bezier',
-            'arrow-scale': 1,
-          },
-        },
-      ],
-      layout: layoutConfigs[layoutType] as any,
-      minZoom: 0.3,
-      maxZoom: 3,
-    });
-
-    cyRef.current = cy;
-
-    // Fit the graph to viewport after layout completes with padding
-    cy.one('layoutstop', () => {
-      // Small delay to ensure layout is fully settled
-      setTimeout(() => {
-        cy.fit(); // Fit all elements to viewport
-        cy.zoom(cy.zoom() * 0.85); // Zoom out 15% to add padding
-        cy.center();
-      }, 100);
-    });
-
-    // Add hover event listeners for node tooltips
-    cy.on('mouseover', 'node', (event) => {
-      const node = event.target;
-      const nodeId = node.id();
-      const metadata = components.get(nodeId);
-
-      if (metadata && containerRef.current) {
-        const position = event.renderedPosition || event.position;
-        const containerRect = containerRef.current.getBoundingClientRect();
-
-        setHoveredNode({
-          id: nodeId,
-          x: position.x + containerRect.left + 15, // Offset from cursor
-          y: position.y + containerRect.top + 15,
-          metadata
-        });
-      }
-    });
-
-    cy.on('mouseout', 'node', () => {
-      setHoveredNode(null);
-    });
-
-    // Cleanup only on unmount
-    return () => {
-      if (cyRef.current) {
-        // Stop all animations before destroying
-        cyRef.current.nodes().stop(true, false);
-        cyRef.current.destroy();
-        cyRef.current = null;
-      }
-      // Clear animation tracking
-      animatingNodesRef.current.clear();
-    };
-  }, [data]); // Only depend on data - components loads in parallel and is available when needed
-
-  // Add click handlers for sensor interaction
-  useEffect(() => {
-    if (!cyRef.current || !data) return;
-
-    const handleNodeClick = (evt: any) => {
-      const node = evt.target;
-      const nodeId = node.id();
-
-      // Only handle clicks on failed sensors
-      if (data.stage1.failedSensors.includes(nodeId)) {
-        setSelectedSensor(prev => prev === nodeId ? null : nodeId);
-      }
-    };
-
-    // Add the event listener
-    cyRef.current.on('tap', 'node', handleNodeClick);
-
-    // Cleanup: remove event listener when data changes or unmount
-    return () => {
-      if (cyRef.current) {
-        cyRef.current.off('tap', 'node', handleNodeClick);
-      }
-    };
-  }, [data]);
-
-  // Update styling when selected sensor changes
-  useEffect(() => {
-    if (!cyRef.current || !data) return;
-    applyVisualization(cyRef.current, data, selectedSensor);
-  }, [data, selectedSensor]);
-
-  // Re-run layout when layout type changes
-  useEffect(() => {
-    if (!cyRef.current) return;
-
-    const cy = cyRef.current;
-    const layout = cy.layout(layoutConfigs[layoutType] as any);
-    layout.run();
-
-    // Fit to viewport after layout completes
-    layout.on('layoutstop', () => {
-      setTimeout(() => {
-        cy.fit();
-        cy.zoom(cy.zoom() * 0.85);
-        cy.center();
-      }, 100);
-    });
-  }, [layoutType]);
+  }, [data, rootCauseMethod]);
 
   // Animate pulsing glow effect for convergence point
-  function animateConvergenceGlow(node: any) {
+  const animateConvergenceGlow = useCallback((node: any) => {
     if (!node || !node.animate) return;
 
     const nodeId = node.id();
@@ -367,14 +172,11 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
       );
     };
     pulseAnimation();
-  }
+  }, []); // No dependencies - only uses refs
 
-  // Apply visualization based on selected sensor
-  function applyVisualization(cy: Core, data: FailureAnalysisData, selectedSensor: string | null = null) {
+  // Apply visualization based on selected sensor and root cause method
+  const applyVisualization = useCallback((cy: Core, data: FailureAnalysisData, selectedSensor: string | null = null, convergencePoint: Hotspot | null = null) => {
     const failedSensors = new Set(data.stage1.failedSensors);
-
-    // Use root cause from backend (component with 0 parents)
-    const convergencePoint = data.stage3.rootCause || null;
 
     // Stop animations for nodes that are no longer the convergence point
     animatingNodesRef.current.forEach(nodeId => {
@@ -562,8 +364,9 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
 
         // Edge is in chain if it connects sensor→parent or any ancestor→ancestor
         const isInSelectedChain =
-          (targetId === selectedSensor && allAncestors.has(sourceId)) ||
-          (allAncestors.has(targetId) && allAncestors.has(sourceId));
+          (sourceId === selectedSensor && directParents.has(targetId)) || // Immediate parent edge
+          (sourceId === selectedSensor && allAncestors.has(targetId)) ||   // All edges from sensor
+          (allAncestors.has(sourceId) && allAncestors.has(targetId));      // Ancestor-to-ancestor edges
 
         if (isInSelectedChain) {
           edge.style({
@@ -582,7 +385,238 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
         }
       });
     }
-  }
+  }, [animateConvergenceGlow]); // Depends on animateConvergenceGlow
+
+  // Fetch failure analysis data
+  useEffect(() => {
+    async function loadData() {
+      // Create abort controller for 6-minute timeout (multi-database Vadalog queries can be slow)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 360000); // 6 minutes (360 seconds)
+
+      try {
+        setLoading(true);
+
+        // Fetch both failure analysis data and component metadata in parallel
+        const [analysisResponse, componentsResponse] = await Promise.all([
+          fetch(`${apiUrl}/failure-analysis`, { signal: controller.signal }),
+          fetch(`${apiUrl}/components`)
+        ]);
+
+        clearTimeout(timeoutId);
+
+        if (!analysisResponse.ok) {
+          throw new Error('Failed to fetch failure analysis data');
+        }
+        if (!componentsResponse.ok) {
+          throw new Error('Failed to fetch component metadata');
+        }
+
+        const analysisData: FailureAnalysisData = await analysisResponse.json();
+        const componentsData: ComponentMetadata[] = await componentsResponse.json();
+
+        // Convert components array to Map for O(1) lookup
+        const componentsMap = new Map<string, ComponentMetadata>();
+        componentsData.forEach(comp => {
+          componentsMap.set(comp.id, comp);
+        });
+
+        setData(analysisData);
+        setComponents(componentsMap);
+        setLoading(false);
+      } catch (err) {
+        clearTimeout(timeoutId);
+        if (err instanceof Error && err.name === 'AbortError') {
+          setError('Request timed out after 6 minutes. Multi-database queries are taking longer than expected.');
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to load analysis');
+        }
+        setLoading(false);
+      }
+    }
+
+    loadData();
+  }, [apiUrl]);
+
+  // Initialize Cytoscape graph once when data loads
+  useEffect(() => {
+    if (!containerRef.current || !data || components.size === 0) return;
+
+    // Prevent double initialization - check if Cytoscape instance already exists
+    if (cyRef.current) return;
+
+    // Get all unique components from failure chains
+    const componentSet = new Set<string>();
+    data.stage1.failedSensors.forEach(sensor => componentSet.add(sensor));
+    data.stage2.failureChains.forEach(chain => {
+      componentSet.add(chain.parent);
+      componentSet.add(chain.child);
+    });
+
+    // Create nodes
+    const nodes: ElementDefinition[] = Array.from(componentSet).map((comp) => ({
+      data: {
+        id: comp,
+        label: comp.replace(/_/g, ' '),
+      },
+    }));
+
+    // Create edges from failure chains
+    // Arrow direction: child → parent (showing failure propagation upward)
+    const edges: ElementDefinition[] = data.stage2.failureChains.map((chain, index) => ({
+      data: {
+        id: `edge-${index}`,
+        source: chain.child,   // Failure starts at child
+        target: chain.parent,  // Propagates to parent
+      },
+    }));
+
+    // Initialize Cytoscape only once
+    const cy = cytoscape({
+      container: containerRef.current,
+      elements: [...nodes, ...edges],
+      style: [
+        {
+          selector: 'node',
+          style: {
+            'background-color': '#64748b', // Default: slate-600
+            label: 'data(label)',
+            color: '#e2e8f0', // slate-200
+            'text-valign': 'center',
+            'text-halign': 'center',
+            'font-size': '14px',
+            'font-family': 'monospace',
+            width: 80,
+            height: 80,
+            'border-width': 4,
+            'border-color': '#475569', // slate-700
+            'text-wrap': 'wrap',
+            'text-max-width': '150px',
+          },
+        },
+        {
+          selector: 'edge',
+          style: {
+            width: 2,
+            'line-color': '#475569', // slate-600
+            'target-arrow-color': '#475569',
+            'target-arrow-shape': 'triangle',
+            'curve-style': 'bezier',
+            'arrow-scale': 1,
+          },
+        },
+      ],
+      layout: layoutConfigs[layoutType] as any,
+      minZoom: 0.3,
+      maxZoom: 3,
+    });
+
+    cyRef.current = cy;
+
+    // Fit the graph to viewport after layout completes with padding
+    cy.one('layoutstop', () => {
+      // Small delay to ensure layout is fully settled
+      setTimeout(() => {
+        cy.fit(); // Fit all elements to viewport
+        cy.zoom(cy.zoom() * 0.85); // Zoom out 15% to add padding
+        cy.center();
+      }, 100);
+    });
+
+    // Add hover event listeners for node tooltips
+    cy.on('mouseover', 'node', (event) => {
+      const node = event.target;
+      const nodeId = node.id();
+      const metadata = components.get(nodeId);
+
+      if (metadata && containerRef.current) {
+        const position = event.renderedPosition || event.position;
+        const containerRect = containerRef.current.getBoundingClientRect();
+
+        setHoveredNode({
+          id: nodeId,
+          x: position.x + containerRect.left + 15, // Offset from cursor
+          y: position.y + containerRect.top + 15,
+          metadata
+        });
+      }
+    });
+
+    cy.on('mouseout', 'node', () => {
+      setHoveredNode(null);
+    });
+
+    // Cleanup only on unmount
+    return () => {
+      if (cyRef.current) {
+        // Stop all animations before destroying
+        cyRef.current.nodes().stop(true, false);
+        cyRef.current.destroy();
+        cyRef.current = null;
+      }
+      // Clear animation tracking
+      animatingNodesRef.current.clear();
+    };
+  }, [data]); // Only depend on data - components loads in parallel and is available when needed
+
+  // Add click handlers for sensor interaction
+  useEffect(() => {
+    if (!cyRef.current || !data) return;
+
+    const handleNodeClick = (evt: any) => {
+      const node = evt.target;
+      const nodeId = node.id();
+
+      // Only handle clicks on failed sensors
+      if (data.stage1.failedSensors.includes(nodeId)) {
+        setSelectedSensor(prev => prev === nodeId ? null : nodeId);
+      }
+    };
+
+    // Add background click handler to reset view
+    const handleBackgroundClick = (evt: any) => {
+      // Check if click was on background (not a node or edge)
+      if (evt.target === cyRef.current) {
+        setSelectedSensor(null); // Reset view
+      }
+    };
+
+    // Add event listeners
+    cyRef.current.on('tap', 'node', handleNodeClick);
+    cyRef.current.on('tap', handleBackgroundClick);
+
+    // Cleanup: remove event listeners when data changes or unmount
+    return () => {
+      if (cyRef.current) {
+        cyRef.current.off('tap', 'node', handleNodeClick);
+        cyRef.current.off('tap', handleBackgroundClick);
+      }
+    };
+  }, [data]);
+
+  // Update styling when selected sensor or root cause method changes
+  useEffect(() => {
+    if (!cyRef.current || !data) return;
+    applyVisualization(cyRef.current, data, selectedSensor, rootCause);
+  }, [data, selectedSensor, rootCause, applyVisualization]);
+
+  // Re-run layout when layout type changes
+  useEffect(() => {
+    if (!cyRef.current) return;
+
+    const cy = cyRef.current;
+    const layout = cy.layout(layoutConfigs[layoutType] as any);
+    layout.run();
+
+    // Fit to viewport after layout completes
+    layout.on('layoutstop', () => {
+      setTimeout(() => {
+        cy.fit();
+        cy.zoom(cy.zoom() * 0.85);
+        cy.center();
+      }, 100);
+    });
+  }, [layoutType]);
 
   if (loading) {
     return (
@@ -609,9 +643,6 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
 
   if (!data) return null;
 
-  // Use root cause from backend (component with 0 parents, calculated by Vadalog)
-  const rootCause = data.stage3.rootCause || null;
-
   return (
     <div className="flex h-full w-full bg-slate-950">
       {/* Graph container */}
@@ -620,18 +651,136 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
         <div className="absolute bottom-4 left-4 z-10 group">
           <button
             onClick={() => setLayoutType(prev => prev === 'hierarchy' ? 'network' : 'hierarchy')}
-            className="rounded-lg bg-slate-800 border border-slate-700 p-2.5 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all shadow-lg"
-            title="Toggle view"
+            className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all shadow-lg flex items-center gap-3"
+            title="Toggle layout"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <svg className="w-7 h-7 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM14 5a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1V5zM4 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1H5a1 1 0 01-1-1v-4zM14 15a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
             </svg>
+            <div className="text-left">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 leading-tight">Layout</div>
+              <div className="text-xs font-semibold leading-tight">{layoutType === 'hierarchy' ? 'Hierarchy' : 'Network'}</div>
+            </div>
           </button>
           {/* Tooltip */}
           <div className="absolute bottom-full left-0 mb-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-            Toggle view
+            Toggle layout algorithm
           </div>
         </div>
+
+        {/* Root Cause Method Selector */}
+        <div className="absolute bottom-4 left-36 z-10 group">
+          <button
+            onClick={() => {
+              setRootCauseMethod(prev => prev === 'default' ? 'combined' : 'default');
+            }}
+            className="rounded-lg bg-slate-800 border border-slate-700 px-3 py-2 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer transition-all shadow-lg flex items-center gap-3"
+            title="Toggle root cause algorithm"
+          >
+            <svg className="w-7 h-7 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" strokeWidth={2} />
+              <circle cx="12" cy="12" r="6" strokeWidth={2} />
+              <circle cx="12" cy="12" r="2" strokeWidth={2} fill="currentColor" />
+            </svg>
+            <div className="text-left">
+              <div className="text-[10px] uppercase tracking-wider text-slate-400 leading-tight">Root Cause Algorithm</div>
+              <div className="text-xs font-semibold leading-tight">
+                {rootCauseMethod === 'default' ? 'Convergence' : 'Convergence with Centrality'}
+              </div>
+            </div>
+          </button>
+          {/* Tooltip */}
+          <div className="absolute bottom-full left-0 mb-2 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded text-xs text-slate-200 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+            Root Cause Detection Method
+            <div className="mt-1 space-y-1 text-[10px] text-slate-400">
+              <div>Convergence: Topmost component (no parents)</div>
+              <div>Convergence with Centrality: Sensors + network centrality</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Interactive Legend */}
+        <div className="absolute bottom-4 right-4 z-10">
+          {showLegend ? (
+            <div className="rounded-lg bg-slate-900/95 border border-slate-700 shadow-xl backdrop-blur-sm">
+              <div className="flex items-center justify-between px-4 py-2 border-b border-slate-700">
+                <h4 className="text-xs font-bold text-slate-200 uppercase tracking-wide">
+                  Guide
+                </h4>
+                <button
+                  onClick={() => setShowLegend(false)}
+                  className="text-slate-400 hover:text-slate-200 transition-colors"
+                  title="Hide guide"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+
+              <div className="p-4 space-y-3">
+                {/* Color Legend */}
+                <div>
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">
+                    Node Colors
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full bg-red-500 border border-red-600"></div>
+                      <span className="text-xs text-slate-300">Failed Sensor</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full bg-red-600 border-2 border-red-500 animate-pulse"></div>
+                      <span className="text-xs text-slate-300">Root Cause (pulsing)</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full bg-violet-400 opacity-40"></div>
+                      <span className="text-xs text-slate-300">Other Failed Sensors</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className="w-3 h-3 rounded-full bg-slate-600"></div>
+                      <span className="text-xs text-slate-300">Component</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Interactions */}
+                <div className="pt-3 border-t border-slate-700">
+                  <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-2">
+                    Interactions
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-start gap-2">
+                      <span className="text-slate-400 text-xs">📍</span>
+                      <div className="flex-1">
+                        <div className="text-xs text-slate-200">Show propagation path</div>
+                        <div className="text-[10px] text-slate-500">Click a failed sensor</div>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-slate-400 text-xs">ℹ️</span>
+                      <div className="flex-1">
+                        <div className="text-xs text-slate-200">View component details</div>
+                        <div className="text-[10px] text-slate-500">Hover any node</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setShowLegend(true)}
+              className="rounded-lg bg-slate-800/90 border border-slate-700 px-3 py-2 text-slate-200 hover:bg-slate-750 hover:border-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all shadow-lg backdrop-blur-sm"
+              title="Show interactive guide"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </button>
+          )}
+        </div>
+
         <div ref={containerRef} className="h-full w-full bg-slate-950" />
       </div>
 
@@ -682,8 +831,32 @@ export default function FailureAnalysisView({ apiUrl }: FailureAnalysisViewProps
             {rootCause && (
               <div className="mb-6">
                 <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3">
-                  <div className="text-xs uppercase tracking-wider text-slate-400 mb-1">Likely Root Cause</div>
+                  <div className="text-xs uppercase tracking-wider text-slate-400 mb-1">
+                    Likely Root Cause
+                    <span className="ml-2 text-[10px] text-slate-500">
+                      ({rootCauseMethod})
+                    </span>
+                  </div>
                   <div className="text-lg font-bold text-red-400">{rootCause.component.replace(/_/g, ' ')}</div>
+
+                  {/* Show centrality metrics if available (combined method) */}
+                  {rootCause.centrality !== undefined && (
+                    <div className="mt-2 space-y-1 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Sensor Convergence:</span>
+                        <span className="text-red-300 font-semibold">
+                          {rootCause.impactScore} sensors
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">In-Degree Centrality:</span>
+                        <span className="text-blue-300 font-semibold">
+                          {(rootCause.centrality * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="text-xs text-slate-500 mb-1.5 mt-2">Affected by:</div>
                   <div className="flex flex-wrap gap-1">
                     {rootCause.affectedSensors.map((sensor) => (
